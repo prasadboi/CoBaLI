@@ -72,8 +72,8 @@ void Executor::executePrefillBatch(std::vector<Request*>& requests) {
         return;
     }
     
-    // Clear batch
-    llama_batch_clear(*batch_);
+    // Clear batch manually
+    batch_->n_tokens = 0;
     
     // Add tokens from each request
     for (auto* req : requests) {
@@ -81,18 +81,15 @@ void Executor::executePrefillBatch(std::vector<Request*>& requests) {
         int end_pos = std::min(start_pos + req->current_chunk_size, 
                                req->prompt_length);
         
-        // Add tokens to batch
+        // Add tokens to batch manually
         for (int i = start_pos; i < end_pos; ++i) {
-            llama_batch_add(*batch_, 
-                           req->prompt_tokens[i], 
-                           i,  // position in sequence
-                           {static_cast<int>(req->id)},  // sequence ID
-                           false);  // not last token
-        }
-        
-        // Mark last token to generate logits
-        if (batch_->n_tokens > 0) {
-            batch_->logits[batch_->n_tokens - 1] = true;
+            if (batch_->n_tokens < config_.max_tokens_per_batch) {
+                batch_->token[batch_->n_tokens] = req->prompt_tokens[i];
+                batch_->pos[batch_->n_tokens] = i;
+                batch_->seq_id[batch_->n_tokens] = static_cast<int>(req->id);
+                batch_->logits[batch_->n_tokens] = (i == end_pos - 1); // logits for last token
+                batch_->n_tokens++;
+            }
         }
     }
     
@@ -121,11 +118,15 @@ void Executor::executeDecodeBatch(std::vector<Request*>& requests) {
         return;
     }
     
-    // Clear batch
-    llama_batch_clear(*batch_);
+    // Clear batch manually
+    batch_->n_tokens = 0;
     
     // Add decode token for each request
     for (auto* req : requests) {
+        if (batch_->n_tokens >= config_.max_tokens_per_batch) {
+            break;
+        }
+        
         // Get last generated token (or last prompt token if just started decode)
         Token token;
         if (req->tokens_generated > 0) {
@@ -136,11 +137,11 @@ void Executor::executeDecodeBatch(std::vector<Request*>& requests) {
         
         int pos = req->tokens_processed + req->tokens_generated;
         
-        llama_batch_add(*batch_, 
-                       token, 
-                       pos,
-                       {static_cast<int>(req->id)},
-                       true);  // generate logits
+        batch_->token[batch_->n_tokens] = token;
+        batch_->pos[batch_->n_tokens] = pos;
+        batch_->seq_id[batch_->n_tokens] = static_cast<int>(req->id);
+        batch_->logits[batch_->n_tokens] = true;  // generate logits
+        batch_->n_tokens++;
     }
     
     // Execute batch

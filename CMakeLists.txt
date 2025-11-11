@@ -29,6 +29,9 @@ option(BUILD_BENCHMARKS "Build benchmarks" ON)
 # Include directories
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/include)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/common)
+include_directories(${CMAKE_SOURCE_DIR}/third_party/llama.cpp/ggml/include)
 
 # llama.cpp integration
 # Note: You need to build llama.cpp first and link against it

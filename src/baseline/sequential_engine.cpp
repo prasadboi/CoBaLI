@@ -112,7 +112,9 @@ std::vector<Token> SequentialEngine::generate(const std::vector<Token>& prompt_t
     );
     
     for (int i = 0; i < n_prompt; ++i) {
-        if (llama_decode(ctx_, llama_batch_get_one(&prompt_tokens[i], 1, i, 0))) {
+        // Cast away const for API compatibility
+        Token* token_ptr = const_cast<Token*>(&prompt_tokens[i]);
+        if (llama_decode(ctx_, llama_batch_get_one(token_ptr, 1, i, 0))) {
             utils::Logger::getInstance().error("Failed to decode prompt");
             return output_tokens;
         }
@@ -135,7 +137,8 @@ std::vector<Token> SequentialEngine::generate(const std::vector<Token>& prompt_t
         n_generated++;
         
         // Decode the sampled token
-        if (llama_decode(ctx_, llama_batch_get_one(&next_token, 1, n_cur, 0))) {
+        Token* token_ptr = &next_token;
+        if (llama_decode(ctx_, llama_batch_get_one(token_ptr, 1, n_cur, 0))) {
             utils::Logger::getInstance().error("Failed to decode token");
             break;
         }
