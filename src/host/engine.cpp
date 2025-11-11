@@ -102,8 +102,7 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
   // --- context params (no seed/flash_attn here)
   llama_context_params cp = llama_context_default_params();
   cp.n_ctx = cfg.n_ctx;
-  const uint32_t MAX_REQS = 1024;
-  cp.n_seq_max = MAX_REQS;
+  cp.n_seq_max = std::min<uint32_t>(256, std::max<uint32_t>(1, S.cfg.max_slots));
   // If you want to tune threads / ubatch for CPU parts:
   // cp.n_threads = cfg.threads; cp.n_threads_batch = cfg.threads;
   // cp.n_ubatch = cfg.ubatch;           
