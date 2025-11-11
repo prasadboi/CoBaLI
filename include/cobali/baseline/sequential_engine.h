@@ -2,12 +2,9 @@
 
 #include "cobali/common/types.h"
 #include "cobali/common/config.h"
+#include "llama.h"
 #include <string>
 #include <memory>
-
-// Forward declare llama.cpp types to avoid exposing them in header
-struct llama_model;
-struct llama_context;
 
 namespace cobali {
 
@@ -33,6 +30,19 @@ public:
     // Process a request object
     void processRequest(Request* request);
     
+    // Tokenize text to tokens
+    std::vector<Token> tokenize(const std::string& text, bool add_bos = true);
+    
+    // Detokenize tokens to text
+    std::string detokenize(const std::vector<Token>& tokens);
+    
+    // Generate text from text (convenience method)
+    std::string generateText(const std::string& prompt,
+                            int max_output_length = 128,
+                            float temperature = 1.0f,
+                            float top_p = 0.9f,
+                            int top_k = 40);
+    
     // Get model information
     int getContextSize() const;
     int getVocabSize() const;
@@ -47,6 +57,8 @@ private:
     // llama.cpp handles
     llama_model* model_;
     llama_context* ctx_;
+    llama_batch batch_;   // Batch for inference
+    bool batch_initialized_;
     
     bool initialized_;
     
@@ -56,4 +68,5 @@ private:
 };
 
 } // namespace cobali
+
 

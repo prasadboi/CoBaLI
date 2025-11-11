@@ -84,10 +84,12 @@ void Executor::executePrefillBatch(std::vector<Request*>& requests) {
         // Add tokens to batch manually
         for (int i = start_pos; i < end_pos; ++i) {
             if (batch_->n_tokens < config_.max_tokens_per_batch) {
-                batch_->token[batch_->n_tokens] = req->prompt_tokens[i];
-                batch_->pos[batch_->n_tokens] = i;
-                batch_->seq_id[batch_->n_tokens] = static_cast<int>(req->id);
-                batch_->logits[batch_->n_tokens] = (i == end_pos - 1); // logits for last token
+                int idx = batch_->n_tokens;
+                batch_->token[idx] = req->prompt_tokens[i];
+                batch_->pos[idx] = i;
+                batch_->n_seq_id[idx] = 1;  // This token belongs to 1 sequence
+                batch_->seq_id[idx][0] = static_cast<llama_seq_id>(req->id);
+                batch_->logits[idx] = (i == end_pos - 1); // logits for last token
                 batch_->n_tokens++;
             }
         }
@@ -136,11 +138,13 @@ void Executor::executeDecodeBatch(std::vector<Request*>& requests) {
         }
         
         int pos = req->tokens_processed + req->tokens_generated;
+        int idx = batch_->n_tokens;
         
-        batch_->token[batch_->n_tokens] = token;
-        batch_->pos[batch_->n_tokens] = pos;
-        batch_->seq_id[batch_->n_tokens] = static_cast<int>(req->id);
-        batch_->logits[batch_->n_tokens] = true;  // generate logits
+        batch_->token[idx] = token;
+        batch_->pos[idx] = pos;
+        batch_->n_seq_id[idx] = 1;  // This token belongs to 1 sequence
+        batch_->seq_id[idx][0] = static_cast<llama_seq_id>(req->id);
+        batch_->logits[idx] = true;  // generate logits
         batch_->n_tokens++;
     }
     
@@ -238,4 +242,5 @@ void Executor::cleanup() {
 }
 
 } // namespace cobali
+
 

@@ -14,6 +14,8 @@ SequentialEngine::SequentialEngine(const EngineConfig& config)
     : config_(config)
     , model_(nullptr)
     , ctx_(nullptr)
+    , batch_{}
+    , batch_initialized_(false)
     , initialized_(false) {
 }
 
@@ -74,6 +76,10 @@ bool SequentialEngine::loadModel() {
         return false;
     }
     
+    // Allocate batch
+    batch_ = llama_batch_init(512, 0, 1);  // 512 tokens max, 0 embeddings, 1 sequence
+    batch_initialized_ = true;
+    
     utils::Logger::getInstance().info(
         utils::format("Model loaded: vocab_size=%d, ctx_size=%d",
                      llama_n_vocab(model_), llama_n_ctx(ctx_))
@@ -93,8 +99,8 @@ std::vector<Token> SequentialEngine::generate(const std::vector<Token>& prompt_t
     
     std::vector<Token> output_tokens;
     
-    // Reset context
-    llama_kv_cache_clear(ctx_);
+    // Note: KV cache clearing commented out - not strictly necessary for single sequential requests
+    // If needed, use: llama_kv_cache_seq_rm(ctx_, -1, 0, -1); to clear all sequences
     
     int n_ctx = llama_n_ctx(ctx_);
     int n_prompt = static_cast<int>(prompt_tokens.size());
@@ -111,14 +117,27 @@ std::vector<Token> SequentialEngine::generate(const std::vector<Token>& prompt_t
         utils::format("Processing prompt: %d tokens", n_prompt)
     );
     
+    // Clear batch
+    batch_.n_tokens = 0;
+    
+    // Add all prompt tokens to batch
     for (int i = 0; i < n_prompt; ++i) {
-        // Cast away const for API compatibility
-        Token* token_ptr = const_cast<Token*>(&prompt_tokens[i]);
-        if (llama_decode(ctx_, llama_batch_get_one(token_ptr, 1, i, 0))) {
-            utils::Logger::getInstance().error("Failed to decode prompt");
-            return output_tokens;
-        }
+        int idx = batch_.n_tokens;
+        batch_.token[idx] = prompt_tokens[i];
+        batch_.pos[idx] = i;
+        batch_.n_seq_id[idx] = 1;
+        batch_.seq_id[idx][0] = 0;  // Sequence ID 0
+        batch_.logits[idx] = (i == n_prompt - 1);  // Only get logits for last token
+        batch_.n_tokens++;
     }
+    
+    // Decode prompt batch
+    if (llama_decode(ctx_, batch_)) {
+        utils::Logger::getInstance().error("Failed to decode prompt");
+        return output_tokens;
+    }
+    
+    utils::Logger::getInstance().debug("Prefill batch decoded successfully");
     
     // Generate output tokens (decode phase)
     int n_generated = 0;
@@ -137,11 +156,23 @@ std::vector<Token> SequentialEngine::generate(const std::vector<Token>& prompt_t
         n_generated++;
         
         // Decode the sampled token
-        Token* token_ptr = &next_token;
-        if (llama_decode(ctx_, llama_batch_get_one(token_ptr, 1, n_cur, 0))) {
+        batch_.n_tokens = 0;
+        int idx = batch_.n_tokens;
+        batch_.token[idx] = next_token;
+        batch_.pos[idx] = n_cur;
+        batch_.n_seq_id[idx] = 1;
+        batch_.seq_id[idx][0] = 0;
+        batch_.logits[idx] = true;  // Get logits for next sampling
+        batch_.n_tokens++;
+        
+        if (llama_decode(ctx_, batch_)) {
             utils::Logger::getInstance().error("Failed to decode token");
             break;
         }
+        
+        utils::Logger::getInstance().debug(
+            utils::format("Decoded token %d at position %d", next_token, n_cur)
+        );
         
         n_cur++;
     }
@@ -233,7 +264,73 @@ std::string SequentialEngine::getModelInfo() const {
                         config_.n_gpu_layers);
 }
 
+std::vector<Token> SequentialEngine::tokenize(const std::string& text, bool add_bos) {
+    if (!initialized_) {
+        return {};
+    }
+    
+    // Allocate buffer for tokens
+    std::vector<Token> tokens(text.length() + (add_bos ? 1 : 0));
+    
+    // Tokenize
+    int n_tokens = llama_tokenize(model_, text.c_str(), text.length(), 
+                                  tokens.data(), tokens.size(), add_bos, false);
+    
+    if (n_tokens < 0) {
+        // Buffer too small, resize and try again
+        tokens.resize(-n_tokens);
+        n_tokens = llama_tokenize(model_, text.c_str(), text.length(),
+                                 tokens.data(), tokens.size(), add_bos, false);
+    }
+    
+    tokens.resize(n_tokens);
+    return tokens;
+}
+
+std::string SequentialEngine::detokenize(const std::vector<Token>& tokens) {
+    if (!initialized_ || tokens.empty()) {
+        return "";
+    }
+    
+    std::string result;
+    char buf[256];  // Buffer for each token piece
+    
+    for (Token token : tokens) {
+        int n = llama_token_to_piece(model_, token, buf, sizeof(buf), false);
+        if (n > 0) {
+            result.append(buf, n);
+        }
+    }
+    
+    return result;
+}
+
+std::string SequentialEngine::generateText(const std::string& prompt,
+                                          int max_output_length,
+                                          float temperature,
+                                          float top_p,
+                                          int top_k) {
+    if (!initialized_) {
+        return "";
+    }
+    
+    // Tokenize prompt
+    std::vector<Token> prompt_tokens = tokenize(prompt, true);
+    
+    // Generate
+    std::vector<Token> output_tokens = generate(prompt_tokens, max_output_length, 
+                                                temperature, top_p, top_k);
+    
+    // Detokenize
+    return detokenize(output_tokens);
+}
+
 void SequentialEngine::cleanup() {
+    if (batch_initialized_) {
+        llama_batch_free(batch_);
+        batch_initialized_ = false;
+    }
+    
     if (ctx_ != nullptr) {
         llama_free(ctx_);
         ctx_ = nullptr;
@@ -250,4 +347,5 @@ void SequentialEngine::cleanup() {
 }
 
 } // namespace cobali
+
 

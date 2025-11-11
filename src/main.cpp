@@ -83,19 +83,26 @@ int main(int argc, char** argv) {
         
         utils::Logger::getInstance().info("Running baseline inference...");
         
-        // Tokenize prompt (simplified - would need proper tokenizer)
-        std::vector<Token> prompt_tokens = {1, 2, 3, 4, 5}; // Dummy tokens
-        
         auto start = std::chrono::steady_clock::now();
-        std::vector<Token> output = engine.generate(prompt_tokens, max_tokens, temperature);
+        std::string output_text = engine.generateText(prompt, max_tokens, temperature);
         auto end = std::chrono::steady_clock::now();
         
         double elapsed_ms = utils::getElapsedMs(start, end);
         
+        // Count tokens in output
+        std::vector<Token> output_tokens = engine.tokenize(output_text, false);
+        
         utils::Logger::getInstance().info(utils::format("Generated %zu tokens in %.2f ms", 
-                                                        output.size(), elapsed_ms));
+                                                        output_tokens.size(), elapsed_ms));
         utils::Logger::getInstance().info(utils::format("Throughput: %.2f tokens/sec", 
-                                                        output.size() / (elapsed_ms / 1000.0)));
+                                                        output_tokens.size() / (elapsed_ms / 1000.0)));
+        
+        // Print the actual output
+        std::cout << "\n" << std::string(60, '=') << std::endl;
+        std::cout << "Generated Output:" << std::endl;
+        std::cout << std::string(60, '=') << std::endl;
+        std::cout << output_text << std::endl;
+        std::cout << std::string(60, '=') << std::endl;
         
     } else if (mode == "batching") {
         // Continuous batching (Phase 2)
@@ -179,4 +186,5 @@ int main(int argc, char** argv) {
     
     return 0;
 }
+
 
