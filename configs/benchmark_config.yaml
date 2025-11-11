@@ -1,0 +1,41 @@
+# Benchmark Configuration
+
+workload:
+  num_requests: 100
+  request_rate: 0.0  # 0 = send as fast as possible
+  
+  # Prompt/output length distribution
+  min_prompt_length: 128
+  max_prompt_length: 512
+  min_output_length: 32
+  max_output_length: 128
+
+timing:
+  duration_seconds: 0.0  # 0 = until all requests complete
+  warmup_seconds: 5.0
+
+output:
+  output_file: "benchmark_results.csv"
+  save_per_request_stats: true
+
+# Test configurations to compare
+test_cases:
+  - name: "baseline"
+    enable_continuous_batching: false
+    enable_prefill_splitting: false
+    max_batch_size: 1
+  
+  - name: "continuous_batching"
+    enable_continuous_batching: true
+    enable_prefill_splitting: false
+    max_batch_size: 16
+    max_tokens_per_batch: 2048
+  
+  - name: "full_cobali"
+    enable_continuous_batching: true
+    enable_prefill_splitting: true
+    max_batch_size: 32
+    max_tokens_per_batch: 4096
+    prefill_chunk_size: 512
+    decode_priority_weight: 0.7
+

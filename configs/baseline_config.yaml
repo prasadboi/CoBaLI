@@ -1,0 +1,29 @@
+# CoBaLI Configuration - Baseline (Sequential)
+# Phase 1: No batching, no optimizations
+
+model:
+  path: "models/qwen2-0_5b-instruct-q4_0.gguf"
+  n_gpu_layers: -1  # -1 = all layers on GPU
+  n_ctx: 2048       # Context size
+
+batching:
+  enable_continuous_batching: false
+  max_batch_size: 1
+  max_tokens_per_batch: 2048
+
+prefill_splitting:
+  enabled: false
+
+memory:
+  kv_cache_size_mb: 1024
+  max_concurrent_requests: 1
+
+performance:
+  num_threads: 8
+  use_mmap: true
+  use_mlock: false
+
+logging:
+  verbose: true
+  log_file: ""  # Empty = stdout
+

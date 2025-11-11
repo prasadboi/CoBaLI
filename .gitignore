@@ -1,0 +1,55 @@
+# Build directories
+build/
+cmake-build-*/
+
+# Models (large files)
+models/*.gguf
+models/*.bin
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+*.egg-info/
+dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compilation
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Logs
+*.log
+logs/
+
+# Benchmark results
+benchmark_results/
+*.csv
+*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# CUDA
+*.ptx
+*.cubin
+*.fatbin
+
+# Test outputs
+test_output/
+
