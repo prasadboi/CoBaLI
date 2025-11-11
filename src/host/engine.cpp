@@ -102,6 +102,8 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
   // --- context params (no seed/flash_attn here)
   llama_context_params cp = llama_context_default_params();
   cp.n_ctx = cfg.n_ctx;
+  const uint32_t MAX_REQS = 1024;
+  cp.n_seq_max = MAX_REQS;
   // If you want to tune threads / ubatch for CPU parts:
   // cp.n_threads = cfg.threads; cp.n_threads_batch = cfg.threads;
   // cp.n_ubatch = cfg.ubatch;           
@@ -160,25 +162,33 @@ uint64_t Engine::add_request(const AddReq& r) {
   q.pos   = 0;
   q.eos   = 0;
 
+  // assign a stable sequence id = index in S.reqs
+  const int idx = (int)S.reqs.size();
+  S.reqs.push_back(std::move(q));        // push first to get stable index
+  HRequest& ref = S.reqs[idx];
+
   // ---- PREFILL
   {
     llama_batch batch = llama_batch_init((int)q.prompt_tokens.size(), /*embd*/0, /*n_seq_max*/1);
     batch.n_tokens = (int)q.prompt_tokens.size();
 
-    std::vector<int32_t>      n_seq_id(batch.n_tokens, 1);
-    std::vector<llama_seq_id> seq_ids_flat(batch.n_tokens);
-    std::vector<llama_seq_id*> seq_id_ptrs(batch.n_tokens);
+    // std::vector<int32_t>      n_seq_id(batch.n_tokens, 1);
+    // std::vector<llama_seq_id> seq_ids_flat(batch.n_tokens);
+    // std::vector<llama_seq_id*> seq_id_ptrs(batch.n_tokens);
 
     for (int i=0;i<batch.n_tokens;++i) {
       batch.token[i]  = q.prompt_tokens[i];
       batch.pos[i]    = q.pos++;
       // seq_ids_flat[i] = (llama_seq_id)q.id;
-      seq_ids_flat[i] = 0;
-      seq_id_ptrs[i]  = &seq_ids_flat[i];
-      batch.logits[i] = 0;
+      // seq_ids_flat[i] = 0;
+      // seq_id_ptrs[i]  = &seq_ids_flat[i];
+      // batch.logits[i] = 0;
+      batch.n_seq_id[i]  = 1;
+      batch.seq_id[i][0] = (llama_seq_id)idx;   // <-- stable per-request seq id
+      batch.logits[i]    = 0;                   // no logits during prefill
     }
-    batch.n_seq_id = n_seq_id.data();
-    batch.seq_id   = seq_id_ptrs.data();
+    // batch.n_seq_id = n_seq_id.data();
+    // batch.seq_id   = seq_id_ptrs.data();
 
     if (llama_decode(S.ctx, batch)) {
       std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort();
@@ -186,16 +196,23 @@ uint64_t Engine::add_request(const AddReq& r) {
     llama_batch_free(batch);
   }
 
-  q.state = RS_DECODE;
-  S.reqs.push_back(std::move(q));
+  // q.state = RS_DECODE;
+  // S.reqs.push_back(std::move(q));
 
-  const int idx = (int)S.reqs.size() - 1;
+  // const int idx = (int)S.reqs.size() - 1;
+  // S.h_state[idx]  = RS_DECODE;
+  // S.h_eos[idx]    = 0;
+  // S.h_pos[idx]    = S.reqs[idx].pos;
+  // S.h_req_id[idx] = (int32_t)S.reqs[idx].id;
+
+  // return S.reqs.back().id;
+    // move to DECODE and update mirrors
+  ref.state = RS_DECODE;
   S.h_state[idx]  = RS_DECODE;
   S.h_eos[idx]    = 0;
-  S.h_pos[idx]    = S.reqs[idx].pos;
-  S.h_req_id[idx] = (int32_t)S.reqs[idx].id;
-
-  return S.reqs.back().id;
+  S.h_pos[idx]    = ref.pos;
+  S.h_req_id[idx] = (int32_t)ref.id;
+  return ref.id;
 }
 
 std::vector<Generated> Engine::run() {
@@ -235,9 +252,9 @@ std::vector<Generated> Engine::run() {
     llama_batch batch = llama_batch_init(h_count, /*embd*/0, /*n_seq_max*/1);
     batch.n_tokens = h_count;
 
-    std::vector<int32_t>       n_seq_id(h_count, 1);
-    std::vector<llama_seq_id>  seq_ids_flat(h_count);
-    std::vector<llama_seq_id*> seq_id_ptrs(h_count);
+    // std::vector<int32_t>       n_seq_id(h_count, 1);
+    // std::vector<llama_seq_id>  seq_ids_flat(h_count);
+    // std::vector<llama_seq_id*> seq_id_ptrs(h_count);
 
     for (int k=0;k<h_count;++k) {
       int i = h_sel[k];
@@ -248,12 +265,15 @@ std::vector<Generated> Engine::run() {
       batch.token[k]  = last;
       batch.pos[k]    = r.pos++;
       // seq_ids_flat[k] = (llama_seq_id)r.id;
-      seq_ids_flat[k] = 0;
-      seq_id_ptrs[k]  = &seq_ids_flat[k];
-      batch.logits[k] = 1; // fetch logits for each row
+      // seq_ids_flat[k] = 0;
+      // seq_id_ptrs[k]  = &seq_ids_flat[k];
+      // batch.logits[k] = 1; // fetch logits for each row
+      batch.n_seq_id[k]  = 1;
+      batch.seq_id[k][0] = (llama_seq_id)i;     // same stable seq id used at prefill
+      batch.logits[k]    = 1;                   // request logits
     }
-    batch.n_seq_id = n_seq_id.data();
-    batch.seq_id   = seq_id_ptrs.data();
+    // batch.n_seq_id = n_seq_id.data();
+    // batch.seq_id   = seq_id_ptrs.data();
 
     if (llama_decode(S.ctx, batch)) {
       std::fprintf(stderr, "llama_decode failed\n"); std::abort();
