@@ -172,7 +172,8 @@ uint64_t Engine::add_request(const AddReq& r) {
     for (int i=0;i<batch.n_tokens;++i) {
       batch.token[i]  = q.prompt_tokens[i];
       batch.pos[i]    = q.pos++;
-      seq_ids_flat[i] = (llama_seq_id)q.id;
+      // seq_ids_flat[i] = (llama_seq_id)q.id;
+      seq_ids_flat[i] = 0;
       seq_id_ptrs[i]  = &seq_ids_flat[i];
       batch.logits[i] = 0;
     }
@@ -246,7 +247,8 @@ std::vector<Generated> Engine::run() {
 
       batch.token[k]  = last;
       batch.pos[k]    = r.pos++;
-      seq_ids_flat[k] = (llama_seq_id)r.id;
+      // seq_ids_flat[k] = (llama_seq_id)r.id;
+      seq_ids_flat[k] = 0;
       seq_id_ptrs[k]  = &seq_ids_flat[k];
       batch.logits[k] = 1; // fetch logits for each row
     }
