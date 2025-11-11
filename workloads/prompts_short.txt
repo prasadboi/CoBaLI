@@ -1,0 +1,3 @@
+Write a single haiku about New York in autumn.
+Explain batch vs. continuous batching in one paragraph, plain English.
+List three uses of CUDA graphs for LLM inference.

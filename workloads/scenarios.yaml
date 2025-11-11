@@ -1,0 +1,11 @@
+scenarios:
+  - name: small
+    prompts_file: workloads/prompts_short.txt
+    max_new: 64
+    mode: cb
+    max_slots: 8
+  - name: seq_baseline
+    prompts_file: workloads/prompts_short.txt
+    max_new: 64
+    mode: seq
+    max_slots: 1
