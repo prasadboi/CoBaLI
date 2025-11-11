@@ -1,45 +1,18 @@
 #pragma once
-#include <cstdint>
+#include "cobali/api.hpp"
 #include <string>
 #include <vector>
+#include <cuda_runtime.h>
 
-enum class Mode { Sequential, Continuous };
-
-enum ReqState : int32_t { RS_PREFILL = 0, RS_DECODE = 1, RS_DONE = 2 };
-
+// Internal host-side request struct
 struct HRequest {
-    uint64_t id = 0;
-    std::vector<int32_t> prompt_tokens;
-    std::vector<int32_t> generated;
-    int32_t max_new = 0;
-    int32_t pos = 0;
-    int32_t eos = 0;
-    int32_t state = RS_PREFILL;
+  uint64_t id;
+  std::vector<int32_t> prompt_tokens;
+  std::vector<int32_t> generated;
+  int32_t pos = 0;       // absolute pos (grows each token)
+  int32_t state = 0;     // RS_*
+  int32_t eos = 0;       // 1 when finished
+  int32_t max_new = 64;
+  bool ttft_seen = false;
 };
 
-struct RunnerConfig {
-    std::string model_path;
-    int n_ctx      = 4096;
-    int gpu_layers = -1;
-    int max_slots  = 8;
-    Mode mode      = Mode::Continuous;
-};
-
-struct Generated {
-    uint64_t id;
-    std::string text;
-};
-
-class Engine {
-public:
-    explicit Engine(const RunnerConfig &cfg);
-    ~Engine();
-
-    struct AddReq { std::string prompt; int max_new = 64; };
-    uint64_t add_request(const AddReq &r);
-    std::vector<Generated> run();
-
-private:
-    struct Impl;                  // <-- forward declare nested type
-    std::unique_ptr<Impl> self_;  // <-- pimpl pointer
-};
