@@ -148,11 +148,7 @@ Engine::~Engine() {
 }
 
 uint64_t Engine::add_request(const AddReq& r) {
-  if (self_->cfg.mode == Mode::Sequential && !self_->reqs.empty()) {
-    std::fprintf(stderr,
-      "Sequential mode accepts exactly 1 request per run; got a second.\n");
-    std::abort();
-  }
+  
   auto& S = *self_;
   HRequest q;
   q.id = S.next_id++;
@@ -175,26 +171,34 @@ uint64_t Engine::add_request(const AddReq& r) {
   HRequest& ref = S.reqs[idx];
 
   // ---- PREFILL
-  {
-    llama_batch batch = llama_batch_init((int)ref.prompt_tokens.size(), /*embd*/0, /*n_seq_max*/1);
+  // ---- PREFILL
+{
+  if (S.cfg.mode == Mode::Sequential) {
+    // We'll prefill inside run() per request after clearing KV.
+    ref.state = RS_PREFILL;
+    S.h_state[idx]  = RS_PREFILL;
+    S.h_eos[idx]    = 0;
+    S.h_pos[idx]    = ref.pos;           // still 0
+    S.h_req_id[idx] = (int32_t)ref.id;
+    return ref.id;
+  } else {
+    // Continuous batching: prefill now 
+    llama_batch batch = llama_batch_init((int)ref.prompt_tokens.size(), 0, 1);
     batch.n_tokens = (int)ref.prompt_tokens.size();
-
-    const int seq_slot = (S.cfg.mode == Mode::Sequential) ? 0 : idx;
-
+    const int seq_slot = idx;            // one seq per request
 
     for (int i = 0; i < batch.n_tokens; ++i) {
       batch.token[i]     = ref.prompt_tokens[i];
       batch.pos[i]       = ref.pos++;
       batch.n_seq_id[i]  = 1;
-      batch.seq_id[i][0] = (llama_seq_id)seq_slot; 
-      batch.logits[i]    = 0;                   // no logits during prefill
+      batch.seq_id[i][0] = (llama_seq_id)seq_slot;
+      batch.logits[i]    = 0;
     }
-
     if (llama_decode(S.ctx, batch)) {
       std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort();
     }
     llama_batch_free(batch);
-    // move to DECODE and update mirrors
+
     ref.state = RS_DECODE;
     S.h_state[idx]  = RS_DECODE;
     S.h_eos[idx]    = 0;
@@ -202,26 +206,55 @@ uint64_t Engine::add_request(const AddReq& r) {
     S.h_req_id[idx] = (int32_t)ref.id;
     return ref.id;
   }
+}
 
-  // move to DECODE and update mirrors
-  ref.state = RS_DECODE;
-  S.h_state[idx]  = RS_DECODE;
-  S.h_eos[idx]    = 0;
-  S.h_pos[idx]    = ref.pos;
-  S.h_req_id[idx] = (int32_t)ref.id;
-  return ref.id;
 }
 
 std::vector<Generated> Engine::run() {
-  if (self_->cfg.mode == Mode::Sequential && (int) self_->reqs.size() != 1) {
-    std::fprintf(stderr, "Sequential mode: expected exactly 1 request.\n");
-    std::abort();
-  }
+  
   auto& S = *self_;
   const int N = (int)S.reqs.size();
   std::vector<Generated> out; out.reserve(N);
 
   int32_t current_active = -1;
+
+  // --- JIT prefill for sequential mode (one request at a time on seq 0)
+if (S.cfg.mode == Mode::Sequential && current_active == -1) {
+  // pick next request that still needs prefill
+  int pick = -1;
+  for (int i = 0; i < (int)S.reqs.size(); ++i) {
+    if (S.reqs[i].state == RS_PREFILL) { pick = i; break; }
+  }
+  if (pick != -1) {
+    // clear KV so seq 0 starts fresh for this request
+    llama_kv_cache_clear(S.ctx);  // public C API to clear cache. :contentReference[oaicite:4]{index=4}
+
+    HRequest &r = S.reqs[pick];
+    r.pos = 0; // ensure absolute positions start at 0 for this prompt
+
+    llama_batch batch = llama_batch_init((int)r.prompt_tokens.size(), 0, 1);
+    batch.n_tokens = (int)r.prompt_tokens.size();
+    for (int t = 0; t < batch.n_tokens; ++t) {
+      batch.token[t]     = r.prompt_tokens[t];
+      batch.pos[t]       = r.pos++;
+      batch.n_seq_id[t]  = 1;
+      batch.seq_id[t][0] = (llama_seq_id)0;   // seq 0 for sequential mode
+      batch.logits[t]    = 0;
+    }
+    if (llama_decode(S.ctx, batch)) {
+      std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort();
+    }
+    llama_batch_free(batch);
+
+    // mark ready for decode
+    r.state          = RS_DECODE;
+    S.h_state[pick]  = RS_DECODE;
+    S.h_pos[pick]    = r.pos;
+    S.h_eos[pick]    = 0;
+    current_active   = pick; // let the selector lock on this one
+  }
+}
+
 
   int unfinished = N;
   while (unfinished > 0) {
@@ -288,8 +321,8 @@ std::vector<Generated> Engine::run() {
         S.h_eos[h_sel[k]]   = 1;
         S.h_state[h_sel[k]] = RS_DONE;
         --unfinished;
-
         out.push_back({ r.id, detok_text(S.vocab, r.generated) });
+        if (S.cfg.mode == Mode::Sequential) current_active = -1;
       } else {
         S.h_pos[h_sel[k]]   = r.pos;
         S.h_state[h_sel[k]] = RS_DECODE;
