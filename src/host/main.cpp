@@ -1,7 +1,9 @@
 #include "cobali/api.hpp"
 #include <cstdio>
 #include <fstream>
+#include <iostream>
 #include <sstream>
+#include "llama.h"
 
 static std::string slurp(const char* path) {
   std::ifstream in(path);

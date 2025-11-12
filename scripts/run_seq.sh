@@ -7,7 +7,7 @@ MODEL=../models/qwen2.5-0.5b-instruct-q5_k_m.gguf
 : > err.txt
 while IFS= read -r P; do
   echo ">>> PROMPT:" "$P" | tee -a out.txt
-  ../build/cobali_runner --model "$MODEL" --mode seq --max-slots 1 --prompt "$P" 1>>out.txt 2>>err.txt
+  ../build/cobali_runner --model "$MODEL" --mode seq --max-slots 1 --prompts "$P" 1>>out.txt 2>>err.txt
   echo | tee -a out.txt
 done < ../workloads/prompts_short.txt
 
