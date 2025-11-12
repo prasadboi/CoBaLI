@@ -227,7 +227,7 @@ if (S.cfg.mode == Mode::Sequential && current_active == -1) {
   }
   if (pick != -1) {
     // clear KV so seq 0 starts fresh for this request
-    llama_kv_cache_clear(S.ctx);  // public C API to clear cache. :contentReference[oaicite:4]{index=4}
+    // llama_kv_cache_clear(S.ctx);  // public C API to clear cache. :contentReference[oaicite:4]{index=4}
 
     HRequest &r = S.reqs[pick];
     r.pos = 0; // ensure absolute positions start at 0 for this prompt
