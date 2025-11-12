@@ -101,10 +101,8 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
 
   // --- context params (no seed/flash_attn here)
   llama_context_params cp = llama_context_default_params();
-  cp.n_ctx = cfg.n_ctx;
-  const int wanted = (cfg.mode == Mode::Sequential) ? 1 : cfg.max_slots;
-  const int backend_cap = (int) llama_max_parallel_sequences();      // from C API
-  cp.n_seq_max = std::max(1, std::min(backend_cap, wanted));
+  cp.n_ctx    = cfg.n_ctx;
+  cp.n_seq_max = (cfg.mode == Mode::Sequential) ? 1 : std::max(1, cfg.max_slots);
   
   S.ctx = llama_init_from_model(S.model, cp);
   if (!S.ctx) { std::fprintf(stderr, "failed to create context\n"); std::abort(); }
@@ -150,6 +148,11 @@ Engine::~Engine() {
 }
 
 uint64_t Engine::add_request(const AddReq& r) {
+  if (self_->cfg.mode == Mode::Sequential && !self_->reqs.empty()) {
+    std::fprintf(stderr,
+      "Sequential mode accepts exactly 1 request per run; got a second.\n");
+    std::abort();
+  }
   auto& S = *self_;
   HRequest q;
   q.id = S.next_id++;
@@ -161,6 +164,13 @@ uint64_t Engine::add_request(const AddReq& r) {
 
   // assign a stable sequence id
   const int idx = (int)S.reqs.size();
+  if (self_->cfg.mode == Mode::Continuous && idx >= self_->cfg.max_slots) {
+    std::fprintf(stderr,
+      "Currently this runner pre-fills only up to --max-slots (%d) "
+      "requests. Got %d. Add lazy prefill if you need more.\n",
+      self_->cfg.max_slots, idx + 1);
+    std::abort();
+  }
   S.reqs.push_back(std::move(q));        // push first to get stable index
   HRequest& ref = S.reqs[idx];
 
@@ -169,22 +179,6 @@ uint64_t Engine::add_request(const AddReq& r) {
     llama_batch batch = llama_batch_init((int)ref.prompt_tokens.size(), /*embd*/0, /*n_seq_max*/1);
     batch.n_tokens = (int)ref.prompt_tokens.size();
 
-    // sequential mode: reuse seq 0 and clear KV before the next request
-    if (S.cfg.mode == Mode::Sequential && idx > 0) {
-      // llama_kv_self_clear is not available in the C API; reinitialize the context
-      // to clear the KV cache for seq 0.
-      if (S.ctx) {
-        llama_free(S.ctx);
-        S.ctx = nullptr;
-      }
-      llama_context_params cp = llama_context_default_params();
-      cp.n_ctx = S.cfg.n_ctx;
-      const int wanted_seq = 1;
-      const int backend_cap = (int) llama_max_parallel_sequences();
-      cp.n_seq_max = std::max(1, std::min(backend_cap, wanted_seq));
-      S.ctx = llama_init_from_model(S.model, cp);
-      if (!S.ctx) { std::fprintf(stderr, "failed to recreate context\n"); std::abort(); }
-    }
     const int seq_slot = (S.cfg.mode == Mode::Sequential) ? 0 : idx;
 
 
@@ -219,6 +213,10 @@ uint64_t Engine::add_request(const AddReq& r) {
 }
 
 std::vector<Generated> Engine::run() {
+  if (self_->cfg.mode == Mode::Sequential && (int) self_->reqs.size() != 1) {
+    std::fprintf(stderr, "Sequential mode: expected exactly 1 request.\n");
+    std::abort();
+  }
   auto& S = *self_;
   const int N = (int)S.reqs.size();
   std::vector<Generated> out; out.reserve(N);
