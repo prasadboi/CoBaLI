@@ -229,7 +229,8 @@ std::vector<Generated> Engine::run() {
         }
         if (pick != -1) {
             HRequest & r = S.reqs[pick];
-
+            auto *mem = llama_get_memory(S.ctx);
+            llama_memory_seq_rm(mem, /*seq_id*/ 0, /*p0*/ 0, /*p1*/ -1);
             llama_batch batch = llama_batch_init((int) r.prompt_tokens.size(), 0, 1);
             batch.n_tokens = (int) r.prompt_tokens.size();
             r.pos = 0;
