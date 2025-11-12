@@ -15,6 +15,7 @@ static std::string slurp(const char* path) {
 int main(int argc, char** argv) {
   RunnerConfig cfg;
   const char* prompts_path = "workloads/prompts_short.txt";
+  std::vector<std::string> single_prompts;
 
   // super light CLI parsing
   for (int i=1;i<argc;++i) {
@@ -29,6 +30,7 @@ int main(int argc, char** argv) {
     } else if (a == "--prompts" && i+1<argc) {
       prompts_path = argv[++i];
     }
+    else if (a == "--prompt" && i+1<argc) single_prompts.push_back(argv[++i]);
   }
 
   if (cfg.model_path.empty()) {
