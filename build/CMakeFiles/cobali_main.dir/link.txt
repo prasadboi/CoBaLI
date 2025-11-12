@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG CMakeFiles/cobali_main.dir/src/main.cpp.o -o cobali_main  -Wl,-rpath,/home/ld3074/lakshay/project_gpus/CoBaLI/build:/home/ld3074/lakshay/project_gpus/CoBaLI/build/bin libcobali.so -Wl,-rpath-link,/home/ld3074/lakshay/project_gpus/CoBaLI/build/bin 
