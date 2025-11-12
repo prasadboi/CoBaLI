@@ -218,45 +218,46 @@ std::vector<Generated> Engine::run() {
 
   int32_t current_active = -1;
 
+  // --- JIT prefill for sequential mode (one request at a time on seq 0)
+if (S.cfg.mode == Mode::Sequential && current_active == -1) {
+  // pick next request that still needs prefill
+  int pick = -1;
+  for (int i = 0; i < (int)S.reqs.size(); ++i) {
+    if (S.reqs[i].state == RS_PREFILL) { pick = i; break; }
+  }
+  if (pick != -1) {
+    // clear KV so seq 0 starts fresh for this request
+    // llama_kv_cache_clear(S.ctx);  // public C API to clear cache. :contentReference[oaicite:4]{index=4}
+
+    HRequest &r = S.reqs[pick];
+    r.pos = 0; // ensure absolute positions start at 0 for this prompt
+
+    llama_batch batch = llama_batch_init((int)r.prompt_tokens.size(), 0, 1);
+    batch.n_tokens = (int)r.prompt_tokens.size();
+    for (int t = 0; t < batch.n_tokens; ++t) {
+      batch.token[t]     = r.prompt_tokens[t];
+      batch.pos[t]       = r.pos++;
+      batch.n_seq_id[t]  = 1;
+      batch.seq_id[t][0] = (llama_seq_id)0;   // seq 0 for sequential mode
+      batch.logits[t]    = 0;
+    }
+    if (llama_decode(S.ctx, batch)) {
+      std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort();
+    }
+    llama_batch_free(batch);
+
+    // mark ready for decode
+    r.state          = RS_DECODE;
+    S.h_state[pick]  = RS_DECODE;
+    S.h_pos[pick]    = r.pos;
+    S.h_eos[pick]    = 0;
+    current_active   = pick; // let the selector lock on this one
+  }
+}
+
 
   int unfinished = N;
   while (unfinished > 0) {
-  // --- JIT prefill for sequential mode (one request at a time on seq 0)
-  if (S.cfg.mode == Mode::Sequential && current_active == -1) {
-    // pick next request that still needs prefill
-    int pick = -1;
-    for (int i = 0; i < (int)S.reqs.size(); ++i) {
-      if (S.reqs[i].state == RS_PREFILL) { pick = i; break; }
-    }
-    if (pick != -1) {
-      // clear KV so seq 0 starts fresh for this request
-      // llama_kv_cache_clear(S.ctx);  // public C API to clear cache. :contentReference[oaicite:4]{index=4}
-
-      HRequest &r = S.reqs[pick];
-      r.pos = 0; // ensure absolute positions start at 0 for this prompt
-
-      llama_batch batch = llama_batch_init((int)r.prompt_tokens.size(), 0, 1);
-      batch.n_tokens = (int)r.prompt_tokens.size();
-      for (int t = 0; t < batch.n_tokens; ++t) {
-        batch.token[t]     = r.prompt_tokens[t];
-        batch.pos[t]       = r.pos++;
-        batch.n_seq_id[t]  = 1;
-        batch.seq_id[t][0] = (llama_seq_id)0;   // seq 0 for sequential mode
-        batch.logits[t]    = 0;
-      }
-      if (llama_decode(S.ctx, batch)) {
-        std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort();
-      }
-      llama_batch_free(batch);
-
-      // mark ready for decode
-      r.state          = RS_DECODE;
-      S.h_state[pick]  = RS_DECODE;
-      S.h_pos[pick]    = r.pos;
-      S.h_eos[pick]    = 0;
-      current_active   = pick; // let the selector lock on this one
-    }
-  }
     // sync mirrors to device
     cudaMemcpyAsync(S.d_state,  S.h_state.data(),  N*sizeof(int32_t), cudaMemcpyHostToDevice, S.stream);
     cudaMemcpyAsync(S.d_eos,    S.h_eos.data(),    N*sizeof(int32_t), cudaMemcpyHostToDevice, S.stream);
