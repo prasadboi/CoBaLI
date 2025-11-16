@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <vector>
+#include <utility>
 #include <string>
 
 #include <cuda_runtime.h>
@@ -79,6 +80,10 @@ static std::string detok_text(const llama_vocab * vocab, const std::vector<llama
 
 Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
   auto& S = *self_;
+
+  if (S.cfg.prefill_chunk_tokens <= 0) {
+    S.cfg.prefill_chunk_tokens = 1;
+  }
 
   llama_backend_init();
 
@@ -170,47 +175,73 @@ uint64_t Engine::add_request(const AddReq& r) {
   S.reqs.push_back(std::move(q));        // push first to get stable index
   HRequest& ref = S.reqs[idx];
 
-  // ---- PREFILL
-  // ---- PREFILL
-{
-  if (S.cfg.mode == Mode::Sequential) {
-    // We'll prefill inside run() per request after clearing KV.
-    ref.state = RS_PREFILL;
-    S.h_state[idx]  = RS_PREFILL;
-    S.h_eos[idx]    = 0;
-    S.h_pos[idx]    = ref.pos;           // still 0
-    S.h_req_id[idx] = (int32_t)ref.id;
-    return ref.id;
-  } else {
-    // Continuous batching: prefill now 
-    llama_batch batch = llama_batch_init((int)ref.prompt_tokens.size(), 0, 1);
-    batch.n_tokens = (int)ref.prompt_tokens.size();
-    const int seq_slot = idx;            // one seq per request
-
-    for (int i = 0; i < batch.n_tokens; ++i) {
-      batch.token[i]     = ref.prompt_tokens[i];
-      batch.pos[i]       = ref.pos++;
-      batch.n_seq_id[i]  = 1;
-      batch.seq_id[i][0] = (llama_seq_id)seq_slot;
-      batch.logits[i]    = 0;
-    }
-    if (llama_decode(S.ctx, batch)) {
-      std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort();
-    }
-    llama_batch_free(batch);
-
-    ref.state = RS_DECODE;
-    S.h_state[idx]  = RS_DECODE;
-    S.h_eos[idx]    = 0;
-    S.h_pos[idx]    = ref.pos;
-    S.h_req_id[idx] = (int32_t)ref.id;
-    return ref.id;
-  }
-}
-
+  ref.state = RS_PREFILL;
+  S.h_state[idx]  = RS_PREFILL;
+  S.h_eos[idx]    = 0;
+  S.h_pos[idx]    = ref.pos;           // still 0
+  S.h_req_id[idx] = (int32_t)ref.id;
+  return ref.id;
 }
 
 std::vector<Generated> Engine::run() {
+  const auto run_prefill_round = [&]() {
+    if (S.cfg.mode != Mode::Continuous) return;
+
+    struct WorkItem {
+      int idx;
+      int chunk;
+    };
+    std::vector<WorkItem> work;
+    work.reserve(S.cfg.max_slots);
+
+    const int chunk_cap = std::max(1, S.cfg.prefill_chunk_tokens);
+    for (int i = 0; i < N; ++i) {
+      if ((int)work.size() >= S.cfg.max_slots) break;
+      HRequest & r = S.reqs[i];
+      if (r.state != RS_PREFILL || r.eos) continue;
+      int remain = (int)r.prompt_tokens.size() - r.prefill_cursor;
+      if (remain <= 0) {
+        r.state = RS_DECODE;
+        S.h_state[i] = RS_DECODE;
+        continue;
+      }
+      work.push_back({ i, std::min(remain, chunk_cap) });
+    }
+
+    if (work.empty()) return;
+
+    int total_tokens = 0;
+    for (auto & w : work) total_tokens += w.chunk;
+    if (total_tokens == 0) return;
+
+    llama_batch batch = llama_batch_init(total_tokens, 0, 1);
+    batch.n_tokens = total_tokens;
+
+    int cursor = 0;
+    for (auto & w : work) {
+      HRequest & r = S.reqs[w.idx];
+      for (int t = 0; t < w.chunk; ++t) {
+        batch.token[cursor]     = r.prompt_tokens[r.prefill_cursor];
+        batch.pos[cursor]       = r.pos++;
+        batch.n_seq_id[cursor]  = 1;
+        batch.seq_id[cursor][0] = (llama_seq_id)w.idx;
+        batch.logits[cursor]    = 0;
+        ++cursor;
+        ++r.prefill_cursor;
+      }
+      if (r.prefill_cursor >= (int)r.prompt_tokens.size()) {
+        r.state = RS_DECODE;
+        S.h_state[w.idx] = RS_DECODE;
+      }
+      S.h_pos[w.idx] = r.pos;
+    }
+
+    if (llama_decode(S.ctx, batch)) {
+      std::fprintf(stderr, "llama_decode prefill split failed\n"); std::abort();
+    }
+    llama_batch_free(batch);
+  };
+
   
   auto& S = *self_;
   const int N = (int)S.reqs.size();
@@ -234,6 +265,7 @@ std::vector<Generated> Engine::run() {
             llama_batch batch = llama_batch_init((int) r.prompt_tokens.size(), 0, 1);
             batch.n_tokens = (int) r.prompt_tokens.size();
             r.pos = 0;
+            r.prefill_cursor = 0;
             for (int t = 0; t < batch.n_tokens; ++t) {
                 batch.token[t]     = r.prompt_tokens[t];
                 batch.pos[t]       = r.pos++;
@@ -245,11 +277,16 @@ std::vector<Generated> Engine::run() {
             llama_batch_free(batch);
 
             r.state          = RS_DECODE;
+            r.prefill_cursor = (int) r.prompt_tokens.size();
             S.h_state[pick]  = RS_DECODE;
             S.h_pos[pick]    = r.pos;
             S.h_eos[pick]    = 0;
             current_active   = pick;
         }
+    }
+
+    if (S.cfg.mode == Mode::Continuous) {
+      run_prefill_round();
     }
     // sync mirrors to device
     cudaMemcpyAsync(S.d_state,  S.h_state.data(),  N*sizeof(int32_t), cudaMemcpyHostToDevice, S.stream);

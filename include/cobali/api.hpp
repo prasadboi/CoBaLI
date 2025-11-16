@@ -20,6 +20,7 @@ struct RunnerConfig {
   int n_ctx = 4096;
   int gpu_layers = -1;    // -1 = all available
   int max_slots = 8;      // decode slots for CB
+  int prefill_chunk_tokens = 128; // tokens per request chunk during CB prefill
   Mode mode = Mode::Continuous;
   int seed = 0;
 };
@@ -29,7 +30,7 @@ public:
   Engine(const RunnerConfig& cfg);
   ~Engine();
 
-  uint64_t add_request(const AddReq& r); // tokenizes + prefill once
+  uint64_t add_request(const AddReq& r); // tokenizes request and queues it
   // run decoding until all active requests are done
   std::vector<Generated> run();
 
