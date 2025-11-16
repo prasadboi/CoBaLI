@@ -184,6 +184,12 @@ uint64_t Engine::add_request(const AddReq& r) {
 }
 
 std::vector<Generated> Engine::run() {
+  auto& S = *self_;
+  const int N = (int)S.reqs.size();
+  std::vector<Generated> out; out.reserve(N);
+
+  int32_t current_active = -1;
+
   const auto run_prefill_round = [&]() {
     if (S.cfg.mode != Mode::Continuous) return;
 
@@ -241,13 +247,6 @@ std::vector<Generated> Engine::run() {
     }
     llama_batch_free(batch);
   };
-
-  
-  auto& S = *self_;
-  const int N = (int)S.reqs.size();
-  std::vector<Generated> out; out.reserve(N);
-
-  int32_t current_active = -1;
 
 
   int unfinished = N;
