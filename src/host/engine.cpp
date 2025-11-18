@@ -153,7 +153,6 @@ Engine::~Engine() {
 }
 
 uint64_t Engine::add_request(const AddReq& r) {
-  
   auto& S = *self_;
   HRequest q;
   q.id = S.next_id++;
@@ -165,21 +164,28 @@ uint64_t Engine::add_request(const AddReq& r) {
 
   // assign a stable sequence id
   const int idx = (int)S.reqs.size();
-  if (self_->cfg.mode == Mode::Continuous && idx >= self_->cfg.max_slots) {
+
+  // --- CHANGED: guard against true buffer capacity, NOT max_slots ---
+  if (idx >= (int) S.h_state.size()) {
     std::fprintf(stderr,
-      "Currently this runner pre-fills only up to --max-slots (%d) "
-      "requests. Got %d. Add lazy prefill if you need more.\n",
-      self_->cfg.max_slots, idx + 1);
+      "Too many queued requests (%d). Increase engine capacity "
+      "(currently %zu; see N in Engine::Engine).\n",
+      idx + 1, S.h_state.size());
     std::abort();
   }
-  S.reqs.push_back(std::move(q));        // push first to get stable index
-  HRequest& ref = S.reqs[idx];
 
-  ref.state = RS_PREFILL;
-  S.h_state[idx]  = RS_PREFILL;
-  S.h_eos[idx]    = 0;
-  S.h_pos[idx]    = ref.pos;           // still 0
-  S.h_req_id[idx] = (int32_t)ref.id;
+  // queue the request
+  S.reqs.push_back(std::move(q));  // stable index = idx
+  HRequest &ref = S.reqs[idx];
+
+  // initialize host mirrors
+  ref.state          = RS_PREFILL;
+  ref.prefill_cursor = 0;          // ensure start of prompt
+  S.h_state[idx]     = RS_PREFILL;
+  S.h_eos[idx]       = 0;
+  S.h_pos[idx]       = ref.pos;    // 0
+  S.h_req_id[idx]    = (int32_t) ref.id;
+
   return ref.id;
 }
 
