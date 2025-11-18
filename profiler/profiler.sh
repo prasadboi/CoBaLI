@@ -6,7 +6,7 @@ set -uo pipefail   # NOTE: no -e, so one failure won't abort the script
 
 RUNNER="../build/cobali_runner"
 MODEL="../models/qwen2.5-0.5b-instruct-q5_k_m.gguf"
-PROMPTS="../workloads/prompts_200.txt"
+PROMPTS="../workloads/prompts_very_long_32.txt"
 
 MAX_SLOTS=16
 PREFILL_CHUNK=128
@@ -16,7 +16,7 @@ PREFILL_CHUNK=128
 CTX_SIZE=16384
 
 ts=$(date +%Y%m%d_%H%M%S)
-LOG="cobali_full_profile_128_chunk${PREFILL_CHUNK}_${ts}.txt"
+LOG="cobali_long_32_full_profile_128_chunk${PREFILL_CHUNK}_${ts}.txt"
 
 echo "Writing log to: $LOG"
 exec > >(tee "$LOG") 2>&1
