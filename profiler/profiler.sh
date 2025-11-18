@@ -6,17 +6,17 @@ set -uo pipefail   # NOTE: no -e, so one failure won't abort the script
 
 RUNNER="../build/cobali_runner"
 MODEL="../models/qwen2.5-0.5b-instruct-q5_k_m.gguf"
-PROMPTS="../workloads/prompts_16.txt"
+PROMPTS="../workloads/prompts_200.txt"
 
-MAX_SLOTS=4
-PREFILL_CHUNK=16
+MAX_SLOTS=16
+PREFILL_CHUNK=128
 
 # Try a big context so each slot has enough tokens.
 # With ctx=32768 and 16 slots, your fork tends to set n_ctx_seq ≈ 2048.
-CTX_SIZE=32768
+CTX_SIZE=16384
 
 ts=$(date +%Y%m%d_%H%M%S)
-LOG="cobali_full_profile_16_chunk${PREFILL_CHUNK}_${ts}.txt"
+LOG="cobali_full_profile_128_chunk${PREFILL_CHUNK}_${ts}.txt"
 
 echo "Writing log to: $LOG"
 exec > >(tee "$LOG") 2>&1
@@ -48,7 +48,7 @@ echo "----- 1) SEQ mode (run-to-completion, max-slots=1) -----"
   --prompts "$PROMPTS" \
   --mode seq \
   --max-slots 1 \
-  --ctx-size "$CTX_SIZE"
+  --ctx "$CTX_SIZE"
 
 echo
 
@@ -60,7 +60,7 @@ echo "----- 2) CONT mode, no prefill split (max-slots=$MAX_SLOTS) -----"
   --prompts "$PROMPTS" \
   --mode cont \
   --max-slots "$MAX_SLOTS" \
-  --ctx-size "$CTX_SIZE" \
+  --ctx "$CTX_SIZE" \
   || echo "[WARN] cont (no prefill split) failed; continuing..."
 
 echo
@@ -73,7 +73,7 @@ echo "----- 3) CONT mode, prefill split (max-slots=$MAX_SLOTS, chunk=$PREFILL_CH
   --prompts "$PROMPTS" \
   --mode cont \
   --max-slots "$MAX_SLOTS" \
-  --ctx-size "$CTX_SIZE" \
+  --ctx "$CTX_SIZE" \
   --prefill-chunk "$PREFILL_CHUNK"
 
 echo
