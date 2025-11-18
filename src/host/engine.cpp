@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <vector>
+#include <deque>
 #include <utility>
 #include <string>
 
@@ -28,6 +29,9 @@ struct Engine::Impl {
   int n_vocab = 0;
 
   std::vector<HRequest> reqs;
+  
+  // Pool of available KV cache slots
+  std::deque<int> free_slots;
 
   // host mirrors used by CUDA selection
   std::vector<int32_t> h_state, h_eos, h_pos, h_req_id;
@@ -93,7 +97,6 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
   if (cfg.gpu_layers >= 0) {
     mp.n_gpu_layers = cfg.gpu_layers; // place GPU layers control here
   }
-  // (optional) mp.main_gpu / mp.split_mode / mp.devices can be set as needed.  :contentReference[oaicite:4]{index=4}
 
   S.model = llama_model_load_from_file(cfg.model_path.c_str(), mp);
   if (!S.model) {
@@ -104,10 +107,17 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
   S.vocab = llama_model_get_vocab(S.model);
   if (!S.vocab) { std::fprintf(stderr, "failed to get vocab from model\n"); std::abort(); }
 
-  // --- context params (no seed/flash_attn here)
+  // --- context params
   llama_context_params cp = llama_context_default_params();
   cp.n_ctx    = cfg.n_ctx;
-  cp.n_seq_max = (cfg.mode == Mode::Sequential) ? 1 : std::max(1, cfg.max_slots);
+  
+  int effective_max_slots = (cfg.mode == Mode::Sequential) ? 1 : std::max(1, cfg.max_slots);
+  cp.n_seq_max = effective_max_slots;
+  
+  // Initialize free slots pool
+  for (int i = 0; i < effective_max_slots; ++i) {
+    S.free_slots.push_back(i);
+  }
   
   S.ctx = llama_init_from_model(S.model, cp);
   if (!S.ctx) { std::fprintf(stderr, "failed to create context\n"); std::abort(); }
@@ -116,7 +126,7 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
 
   cudaStreamCreate(&S.stream);
 
-  // reserve device arrays (capacity for up to 1024 requests; adjust to your needs)
+  // reserve device arrays
   const int N = 1024;
   S.h_state.assign(N, 0);
   S.h_eos.assign(N, 0);
@@ -161,11 +171,11 @@ uint64_t Engine::add_request(const AddReq& r) {
   q.state = RS_PREFILL;
   q.pos   = 0;
   q.eos   = 0;
+  q.slot_id = -1; // No slot initially
 
   // assign a stable sequence id
   const int idx = (int)S.reqs.size();
 
-  // --- CHANGED: guard against true buffer capacity, NOT max_slots ---
   if (idx >= (int) S.h_state.size()) {
     std::fprintf(stderr,
       "Too many queued requests (%d). Increase engine capacity "
@@ -174,16 +184,14 @@ uint64_t Engine::add_request(const AddReq& r) {
     std::abort();
   }
 
-  // queue the request
-  S.reqs.push_back(std::move(q));  // stable index = idx
+  S.reqs.push_back(std::move(q));
   HRequest &ref = S.reqs[idx];
 
-  // initialize host mirrors
   ref.state          = RS_PREFILL;
-  ref.prefill_cursor = 0;          // ensure start of prompt
+  ref.prefill_cursor = 0;
   S.h_state[idx]     = RS_PREFILL;
   S.h_eos[idx]       = 0;
-  S.h_pos[idx]       = ref.pos;    // 0
+  S.h_pos[idx]       = ref.pos;
   S.h_req_id[idx]    = (int32_t) ref.id;
 
   return ref.id;
@@ -208,9 +216,25 @@ std::vector<Generated> Engine::run() {
 
     const int chunk_cap = std::max(1, S.cfg.prefill_chunk_tokens);
     for (int i = 0; i < N; ++i) {
+      // Stop if we can't schedule more concurrent work
+      // This check is heuristic; we strictly check available slots below
       if ((int)work.size() >= S.cfg.max_slots) break;
+      
       HRequest & r = S.reqs[i];
       if (r.state != RS_PREFILL || r.eos) continue;
+
+      // If it doesn't have a slot, try to assign one
+      if (r.slot_id < 0) {
+        if (S.free_slots.empty()) {
+          continue; // No space left, wait for others to finish
+        }
+        r.slot_id = S.free_slots.front();
+        S.free_slots.pop_front();
+        
+        // IMPORTANT: Clear the KV cache for this slot before new usage
+        llama_memory_seq_rm(llama_get_memory(S.ctx), r.slot_id, 0, -1);
+      }
+
       int remain = (int)r.prompt_tokens.size() - r.prefill_cursor;
       if (remain <= 0) {
         r.state = RS_DECODE;
@@ -236,7 +260,8 @@ std::vector<Generated> Engine::run() {
         batch.token[cursor]     = r.prompt_tokens[r.prefill_cursor];
         batch.pos[cursor]       = r.pos++;
         batch.n_seq_id[cursor]  = 1;
-        batch.seq_id[cursor][0] = (llama_seq_id)w.idx;
+        // Use slot_id instead of req index
+        batch.seq_id[cursor][0] = (llama_seq_id)r.slot_id;
         batch.logits[cursor]    = 0;
         ++cursor;
         ++r.prefill_cursor;
@@ -257,7 +282,7 @@ std::vector<Generated> Engine::run() {
 
   int unfinished = N;
   while (unfinished > 0) {
-    // NEW: prefill next request when running sequentially and nothing is active
+    // Sequential mode prefill
     if (S.cfg.mode == Mode::Sequential && current_active == -1) {
         int pick = -1;
         for (int i = 0; i < (int) S.reqs.size(); ++i) {
@@ -265,8 +290,13 @@ std::vector<Generated> Engine::run() {
         }
         if (pick != -1) {
             HRequest & r = S.reqs[pick];
-            auto *mem = llama_get_memory(S.ctx);
-            llama_memory_seq_rm(mem, /*seq_id*/ 0, /*p0*/ 0, /*p1*/ -1);
+            
+            // Assign reserved slot 0 for sequential
+            r.slot_id = 0; 
+            
+            // Clear KV for slot 0
+            llama_memory_seq_rm(llama_get_memory(S.ctx), 0, 0, -1);
+            
             llama_batch batch = llama_batch_init((int) r.prompt_tokens.size(), 0, 1);
             batch.n_tokens = (int) r.prompt_tokens.size();
             r.pos = 0;
@@ -275,7 +305,7 @@ std::vector<Generated> Engine::run() {
                 batch.token[t]     = r.prompt_tokens[t];
                 batch.pos[t]       = r.pos++;
                 batch.n_seq_id[t]  = 1;
-                batch.seq_id[t][0] = (llama_seq_id) 0; // seq 0 in sequential mode
+                batch.seq_id[t][0] = (llama_seq_id) 0;
                 batch.logits[t]    = 0;
             }
             if (llama_decode(S.ctx, batch)) { std::fprintf(stderr, "llama_decode prefill failed\n"); std::abort(); }
@@ -293,7 +323,7 @@ std::vector<Generated> Engine::run() {
     if (S.cfg.mode == Mode::Continuous) {
       run_prefill_round();
     }
-    // sync mirrors to device
+    
     cudaMemcpyAsync(S.d_state,  S.h_state.data(),  N*sizeof(int32_t), cudaMemcpyHostToDevice, S.stream);
     cudaMemcpyAsync(S.d_eos,    S.h_eos.data(),    N*sizeof(int32_t), cudaMemcpyHostToDevice, S.stream);
     cudaMemcpyAsync(S.d_pos,    S.h_pos.data(),    N*sizeof(int32_t), cudaMemcpyHostToDevice, S.stream);
@@ -317,28 +347,27 @@ std::vector<Generated> Engine::run() {
     cudaMemcpyAsync(h_sel.data(), S.d_selected_idx, h_count*sizeof(int32_t), cudaMemcpyDeviceToHost, S.stream);
     cudaStreamSynchronize(S.stream);
 
-    // request 1 token for each selected sequence
-    llama_batch batch = llama_batch_init(h_count, /*embd*/0, /*n_seq_max*/1);
+    llama_batch batch = llama_batch_init(h_count, 0, 1);
     batch.n_tokens = h_count;
-
-    // std::vector<int32_t>       n_seq_id(h_count, 1);
-    // std::vector<llama_seq_id>  seq_ids_flat(h_count);
-    // std::vector<llama_seq_id*> seq_id_ptrs(h_count);
 
     for (int k=0;k<h_count;++k) {
       int i = h_sel[k];
       HRequest& r = S.reqs[i];
+
+      // Sanity check
+      if (r.slot_id < 0) {
+          fprintf(stderr, "Error: selected request %d has no slot\n", i);
+          abort();
+      }
 
       llama_token last = r.generated.empty() ? r.prompt_tokens.back() : r.generated.back();
 
       batch.token[k]  = last;
       batch.pos[k]    = r.pos++;
       batch.n_seq_id[k]  = 1;
-      batch.seq_id[k][0] = (llama_seq_id)((S.cfg.mode == Mode::Sequential) ? 0 : i);
-      batch.logits[k]    = 1;                   // request logits
+      batch.seq_id[k][0] = (llama_seq_id)r.slot_id;
+      batch.logits[k]    = 1;
     }
-    // batch.n_seq_id = n_seq_id.data();
-    // batch.seq_id   = seq_id_ptrs.data();
 
     if (llama_decode(S.ctx, batch)) {
       std::fprintf(stderr, "llama_decode failed\n"); std::abort();
@@ -355,6 +384,14 @@ std::vector<Generated> Engine::run() {
         r.eos = 1; r.state = RS_DONE;
         S.h_eos[h_sel[k]]   = 1;
         S.h_state[h_sel[k]] = RS_DONE;
+        
+        // Return slot
+        if (r.slot_id >= 0) {
+            S.free_slots.push_back(r.slot_id);
+            // Clear immediately to be safe? (Already cleared on allocation)
+            r.slot_id = -1;
+        }
+        
         --unfinished;
         out.push_back({ r.id, detok_text(S.vocab, r.generated) });
         if (S.cfg.mode == Mode::Sequential) current_active = -1;

@@ -15,5 +15,8 @@ struct HRequest {
   int32_t eos = 0;       // 1 when finished
   int32_t max_new = 64;
   bool ttft_seen = false;
+  
+  // Mapping to a physical KV cache slot (0..max_slots-1)
+  // -1 implies no slot currently assigned.
+  int32_t slot_id = -1; 
 };
-
