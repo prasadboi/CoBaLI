@@ -16,8 +16,7 @@
 #include <cuda_runtime.h>
 #include "../cuda/batcher.cuh"
 
-// llama.cpp C API
-#include "llama.h"   // from external/llama.cpp
+#include "llama.h"   // this comes from external/llama.cpp
 
 struct Engine::Impl {
   RunnerConfig cfg;
@@ -30,16 +29,16 @@ struct Engine::Impl {
 
   std::vector<HRequest> reqs;
   
-  // Pool of available KV cache slots
+  // this line represents the pool of available KV cache slots
   std::deque<int> free_slots;
 
-  // host mirrors used by CUDA selection
+  // this is the host mirrors used by CUDA selection
   std::vector<int32_t> h_state, h_eos, h_pos, h_req_id;
 
-  // device buffers
+  //device buffers
   int32_t *d_state=nullptr, *d_eos=nullptr, *d_pos=nullptr, *d_req_id=nullptr;
   int32_t *d_selected_idx=nullptr, *d_selected_cnt=nullptr;
-  int32_t *d_sel_seq=nullptr, *d_sel_pos=nullptr; // optional metadata
+  int32_t *d_sel_seq=nullptr, *d_sel_pos=nullptr;
   cudaStream_t stream = nullptr;
 
   uint64_t next_id = 1;
@@ -54,29 +53,24 @@ static int32_t greedy_argmax(const float* row, int n) {
   return best;
 }
 
-// tokenize using vocab (2-pass size + write)
+//this has been tokenized using vocab -> 2-pass size + write
 static std::vector<llama_token> tokenize(const llama_vocab * vocab, const std::string& text) {
-  int n = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
-                         nullptr, 0, /*add_special*/true, /*parse_special*/true);
+  int n = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(), nullptr, 0, true, true);
   if (n < 0) n = -n;
   std::vector<llama_token> out(n);
-  int n2 = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
-                          out.data(), (int32_t)out.size(),
-                          /*add_special*/true, /*parse_special*/true);
+  int n2 = llama_tokenize(vocab, text.c_str(), (int32_t)text.size(), out.data(), (int32_t)out.size(), true, true);
   if (n2 < 0) n2 = -n2;
   out.resize(n2);
   return out;
 }
 
-// robust detokenize (auto-grow buffer)
+//detokenize
 static std::string detok_text(const llama_vocab * vocab, const std::vector<llama_token>& toks) {
   if (toks.empty()) return {};
   int cap = 256;
   std::string buf(cap, '\0');
   while (true) {
-    int wrote = llama_detokenize(vocab, toks.data(), (int32_t)toks.size(),
-                                 buf.data(), (int32_t)buf.size(),
-                                 /*remove_special*/true, /*unparse_special*/false);
+    int wrote = llama_detokenize(vocab, toks.data(), (int32_t)toks.size(), buf.data(), (int32_t)buf.size(), true, false);
     if (wrote >= 0) { buf.resize(wrote); return buf; }
     cap *= 2; buf.assign(cap, '\0');
   }
@@ -91,11 +85,10 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
 
   llama_backend_init();
 
-  // --- model params (GPU/offload etc. live here)
   llama_model_params mp = llama_model_default_params();
   mp.vocab_only = false;
   if (cfg.gpu_layers >= 0) {
-    mp.n_gpu_layers = cfg.gpu_layers; // place GPU layers control here
+    mp.n_gpu_layers = cfg.gpu_layers;
   }
 
   S.model = llama_model_load_from_file(cfg.model_path.c_str(), mp);
@@ -107,14 +100,12 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
   S.vocab = llama_model_get_vocab(S.model);
   if (!S.vocab) { std::fprintf(stderr, "failed to get vocab from model\n"); std::abort(); }
 
-  // --- context params
   llama_context_params cp = llama_context_default_params();
   cp.n_ctx    = cfg.n_ctx;
   
   int effective_max_slots = (cfg.mode == Mode::Sequential) ? 1 : std::max(1, cfg.max_slots);
   cp.n_seq_max = effective_max_slots;
   
-  // Initialize free slots pool
   for (int i = 0; i < effective_max_slots; ++i) {
     S.free_slots.push_back(i);
   }
@@ -126,7 +117,7 @@ Engine::Engine(const RunnerConfig& cfg): self_(new Impl(cfg)) {
 
   cudaStreamCreate(&S.stream);
 
-  // reserve device arrays
+  //this is to reserve device arrays
   const int N = 1024;
   S.h_state.assign(N, 0);
   S.h_eos.assign(N, 0);
@@ -171,9 +162,9 @@ uint64_t Engine::add_request(const AddReq& r) {
   q.state = RS_PREFILL;
   q.pos   = 0;
   q.eos   = 0;
-  q.slot_id = -1; // No slot initially
+  q.slot_id = -1;
 
-  // assign a stable sequence id
+  //this is for assigning a stable sequence id
   const int idx = (int)S.reqs.size();
 
   if (idx >= (int) S.h_state.size()) {
@@ -216,22 +207,18 @@ std::vector<Generated> Engine::run() {
 
     const int chunk_cap = std::max(1, S.cfg.prefill_chunk_tokens);
     for (int i = 0; i < N; ++i) {
-      // Stop if we can't schedule more concurrent work
-      // This check is heuristic; we strictly check available slots below
       if ((int)work.size() >= S.cfg.max_slots) break;
       
       HRequest & r = S.reqs[i];
       if (r.state != RS_PREFILL || r.eos) continue;
-
-      // If it doesn't have a slot, try to assign one
       if (r.slot_id < 0) {
         if (S.free_slots.empty()) {
-          continue; // No space left, wait for others to finish
+          continue;
         }
         r.slot_id = S.free_slots.front();
         S.free_slots.pop_front();
         
-        // IMPORTANT: Clear the KV cache for this slot before new usage
+        //this is for clearing the KV cache for this particular slot before new usage
         llama_memory_seq_rm(llama_get_memory(S.ctx), r.slot_id, 0, -1);
       }
 
@@ -260,7 +247,6 @@ std::vector<Generated> Engine::run() {
         batch.token[cursor]     = r.prompt_tokens[r.prefill_cursor];
         batch.pos[cursor]       = r.pos++;
         batch.n_seq_id[cursor]  = 1;
-        // Use slot_id instead of req index
         batch.seq_id[cursor][0] = (llama_seq_id)r.slot_id;
         batch.logits[cursor]    = 0;
         ++cursor;
@@ -282,7 +268,6 @@ std::vector<Generated> Engine::run() {
 
   int unfinished = N;
   while (unfinished > 0) {
-    // Sequential mode prefill
     if (S.cfg.mode == Mode::Sequential && current_active == -1) {
         int pick = -1;
         for (int i = 0; i < (int) S.reqs.size(); ++i) {
@@ -291,10 +276,9 @@ std::vector<Generated> Engine::run() {
         if (pick != -1) {
             HRequest & r = S.reqs[pick];
             
-            // Assign reserved slot 0 for sequential
             r.slot_id = 0; 
             
-            // Clear KV for slot 0
+            //this is for clearing the KV for slot 0
             llama_memory_seq_rm(llama_get_memory(S.ctx), 0, 0, -1);
             
             llama_batch batch = llama_batch_init((int) r.prompt_tokens.size(), 0, 1);
@@ -354,7 +338,6 @@ std::vector<Generated> Engine::run() {
       int i = h_sel[k];
       HRequest& r = S.reqs[i];
 
-      // Sanity check
       if (r.slot_id < 0) {
           fprintf(stderr, "Error: selected request %d has no slot\n", i);
           abort();
@@ -385,10 +368,8 @@ std::vector<Generated> Engine::run() {
         S.h_eos[h_sel[k]]   = 1;
         S.h_state[h_sel[k]] = RS_DONE;
         
-        // Return slot
         if (r.slot_id >= 0) {
             S.free_slots.push_back(r.slot_id);
-            // Clear immediately to be safe? (Already cleared on allocation)
             r.slot_id = -1;
         }
         

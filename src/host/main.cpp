@@ -16,7 +16,6 @@ int main(int argc, char** argv) {
   RunnerConfig cfg;
   const char* prompts_path = "workloads/prompts_short.txt";
 
-  // super light CLI parsing
   for (int i=1;i<argc;++i) {
     std::string a = argv[i];
     if (a == "--model" && i+1<argc) cfg.model_path = argv[++i];
@@ -39,7 +38,6 @@ int main(int argc, char** argv) {
 
   Engine eng(cfg);
 
-  // Add a few demo requests (one per line)
   {
     std::ifstream in(prompts_path);
     std::string line;

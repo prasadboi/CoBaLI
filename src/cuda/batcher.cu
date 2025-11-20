@@ -2,10 +2,7 @@
 #include <cuda_runtime.h>
 #include <stdint.h>
 
-__device__ __forceinline__ bool append_capped(int32_t idx,
-                                              int32_t max_slots,
-                                              int32_t* d_selected_idx,
-                                              int32_t* d_selected_cnt) {
+__device__ __forceinline__ bool append_capped(int32_t idx, int32_t max_slots, int32_t* d_selected_idx, int32_t* d_selected_cnt) {
   int32_t pos = atomicAdd(d_selected_cnt, 1);
   if (pos < max_slots) {
     d_selected_idx[pos] = idx;
@@ -16,12 +13,7 @@ __device__ __forceinline__ bool append_capped(int32_t idx,
   }
 }
 
-__global__ void k_select_continuous(const int32_t* __restrict__ d_state,
-                                    const int32_t* __restrict__ d_eos,
-                                    int32_t n_requests,
-                                    int32_t max_slots,
-                                    int32_t* __restrict__ d_selected_idx,
-                                    int32_t* __restrict__ d_selected_cnt) {
+__global__ void k_select_continuous(const int32_t* __restrict__ d_state, const int32_t* __restrict__ d_eos, int32_t n_requests, int32_t max_slots, int32_t* __restrict__ d_selected_idx, int32_t* __restrict__ d_selected_cnt) {
   for (int32_t i = blockIdx.x * blockDim.x + threadIdx.x;
        i < n_requests;
        i += blockDim.x * gridDim.x) {
@@ -32,12 +24,7 @@ __global__ void k_select_continuous(const int32_t* __restrict__ d_state,
   }
 }
 
-__global__ void k_select_sequential(const int32_t* __restrict__ d_state,
-                                    const int32_t* __restrict__ d_eos,
-                                    int32_t n_requests,
-                                    int32_t current_active,
-                                    int32_t* __restrict__ d_selected_idx,
-                                    int32_t* __restrict__ d_selected_cnt) {
+__global__ void k_select_sequential(const int32_t* __restrict__ d_state, const int32_t* __restrict__ d_eos, int32_t n_requests, int32_t current_active, int32_t* __restrict__ d_selected_idx, int32_t* __restrict__ d_selected_cnt) {
   if (current_active >= 0 &&
       current_active < n_requests &&
       d_state[current_active] == RS_DECODE &&
@@ -74,12 +61,7 @@ __global__ void k_select_sequential(const int32_t* __restrict__ d_state,
   }
 }
 
-__global__ void k_gather_metadata(const int32_t* __restrict__ d_selected_idx,
-                                  int32_t selected_cnt,
-                                  const int32_t* __restrict__ d_req_id,
-                                  const int32_t* __restrict__ d_pos,
-                                  int32_t* __restrict__ d_seq_id_out,
-                                  int32_t* __restrict__ d_pos_out) {
+__global__ void k_gather_metadata(const int32_t* __restrict__ d_selected_idx, int32_t selected_cnt, const int32_t* __restrict__ d_req_id, const int32_t* __restrict__ d_pos, int32_t* __restrict__ d_seq_id_out, int32_t* __restrict__ d_pos_out) {
   int32_t k = blockIdx.x * blockDim.x + threadIdx.x;
   if (k >= selected_cnt) return;
   int32_t i = d_selected_idx[k];
@@ -91,13 +73,7 @@ extern "C" void cobali_reset_selected_count(int32_t* d_selected_cnt, cudaStream_
   cudaMemsetAsync(d_selected_cnt, 0, sizeof(int32_t), stream);
 }
 
-extern "C" void cobali_select_continuous(const int32_t* d_state,
-                                         const int32_t* d_eos,
-                                         int32_t n_requests,
-                                         int32_t max_slots,
-                                         int32_t* d_selected_idx,
-                                         int32_t* d_selected_cnt,
-                                         cudaStream_t stream) {
+extern "C" void cobali_select_continuous(const int32_t* d_state, const int32_t* d_eos, int32_t n_requests, int32_t max_slots, int32_t* d_selected_idx, int32_t* d_selected_cnt, cudaStream_t stream) {
   cobali_reset_selected_count(d_selected_cnt, stream);
   int threads = 256;
   int blocks  = (n_requests + threads - 1) / threads;
@@ -106,25 +82,13 @@ extern "C" void cobali_select_continuous(const int32_t* d_state,
     d_state, d_eos, n_requests, max_slots, d_selected_idx, d_selected_cnt);
 }
 
-extern "C" void cobali_select_sequential(const int32_t* d_state,
-                                         const int32_t* d_eos,
-                                         int32_t n_requests,
-                                         int32_t current_active,
-                                         int32_t* d_selected_idx,
-                                         int32_t* d_selected_cnt,
-                                         cudaStream_t stream) {
+extern "C" void cobali_select_sequential(const int32_t* d_state, const int32_t* d_eos, int32_t n_requests, int32_t current_active, int32_t* d_selected_idx, int32_t* d_selected_cnt, cudaStream_t stream) {
   cobali_reset_selected_count(d_selected_cnt, stream);
   k_select_sequential<<<32, 128, 0, stream>>>(
     d_state, d_eos, n_requests, current_active, d_selected_idx, d_selected_cnt);
 }
 
-extern "C" void cobali_gather_metadata(const int32_t* d_selected_idx,
-                                       int32_t selected_cnt,
-                                       const int32_t* d_req_id,
-                                       const int32_t* d_pos,
-                                       int32_t* d_seq_id_out,
-                                       int32_t* d_pos_out,
-                                       cudaStream_t stream) {
+extern "C" void cobali_gather_metadata(const int32_t* d_selected_idx, int32_t selected_cnt, const int32_t* d_req_id, const int32_t* d_pos, int32_t* d_seq_id_out, int32_t* d_pos_out, cudaStream_t stream) {
   int threads = 128;
   int blocks  = (selected_cnt + threads - 1) / threads;
   k_gather_metadata<<<blocks, threads, 0, stream>>>(
