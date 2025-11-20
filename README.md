@@ -34,8 +34,8 @@ Continuous Batching and Prefill Splitting for Effecient LLM inference
 
 # Profiling with NSight Systems (run from within scripts directory)
 1. These are the runs used to compare sequential vs continuous decoding for a batch of prompts:
-   1. SEQUENTIAL RUN: `nsys profile --trace=cuda,nvtx --sample=none -o seq_profile ../build/cobali_runner --model ../models/qwen2.5-0.5b-instruct-q5_k_m.gguf --prompts ../workloads/prompts_32.txt --mode seq --max-slots 1 --ctx 16384`
-   2. CONTINUOUS MODE (WITHOUT PREFILL CHUNKING): `nsys profile --trace=cuda,nvtx --sample=none -o cont_profile ../build/cobali_runner --model ../models/qwen2.5-0.5b-instruct-q5_k_m.gguf --prompts ../workloads/prompts_32.txt --mode cont --max-slots 4 --ctx 16384 --prefill-chunk 256`
+   1. SEQUENTIAL RUN: `nsys profile --trace=cuda,nvtx --sample=none -o seq_profile ../build/cobali_runner --model ../models/qwen2.5-0.5b-instruct-q5_k_m.gguf --prompts ../workloads/prompts_16.txt --mode seq --max-slots 1 --ctx 16384`
+   2. CONTINUOUS MODE (WITHOUT PREFILL CHUNKING): `nsys profile --trace=cuda,nvtx --sample=none -o cont_profile ../build/cobali_runner --model ../models/qwen2.5-0.5b-instruct-q5_k_m.gguf --prompts ../workloads/prompts_16.txt --mode cont --max-slots 4 --ctx 16384 --prefill-chunk 256`
   
 2. Export to SQLite (needs to be done for both runs)
    1. `nsys export -t sqlite -o outputfilename  inputfilename.nsys-rep`
