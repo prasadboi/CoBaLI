@@ -1,16 +1,21 @@
 # CoBaLI
-Continuous Batching for LLM inference
-
-# Install llama.cpp
-1. Create a folder called `external` in the root directory
-2. cd into `external`
-3. run `git clone https://github.com/ggml-org/llama.cpp.git`
+Continuous Batching and Prefill Splitting for Effecient LLM inference
 
 # Modules to load in cuda5
 1. `module load cuda-12.4`
 2. `module load python-12.1`
 3. `pip install pandas`
 4. `pip install matplotlib`
+
+# Install llama.cpp
+1. Create a folder called `external` in the root directory
+2. cd into `external`
+3. run `git clone https://github.com/ggml-org/llama.cpp.git`
+
+# Install the model
+1. Run `mkdir models` from the root
+2. Run `pip install -U huggingface_hub`
+3. Run `python -c "from huggingface_hub import hf_hub_download; hf_hub_download('Qwen/Qwen2.5-0.5B-Instruct-GGUF', 'qwen2.5-0.5b-instruct-q5_k_m.gguf', local_dir='models', local_dir_use_symlinks=False)"`
 
 # Instructions to run seq mode:
 1. in project root directory run the following:
