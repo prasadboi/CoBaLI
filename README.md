@@ -1,6 +1,11 @@
 # CoBaLI
 Continuous Batching for LLM inference
 
+# Install llama.cpp
+1. Create a folder called `external` in the root directory
+2. cd into `external`
+3. run `git clone https://github.com/ggml-org/llama.cpp.git`
+
 # Modules to load in cuda5
 1. `module load cuda-12.4`
 2. `module load python-12.1`
