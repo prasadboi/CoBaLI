@@ -18,8 +18,9 @@ struct Generated {
 struct RunnerConfig {
   std::string model_path;
   int n_ctx = 4096;
-  int gpu_layers = -1;    // -1 = all available
-  int max_slots = 8;      // decode slots for CB
+  int gpu_layers = -1;
+  int max_slots = 8;
+  int prefill_chunk_tokens = 128;
   Mode mode = Mode::Continuous;
   int seed = 0;
 };
@@ -29,8 +30,8 @@ public:
   Engine(const RunnerConfig& cfg);
   ~Engine();
 
-  uint64_t add_request(const AddReq& r); // tokenizes + prefill once
-  // run decoding until all active requests are done
+  uint64_t add_request(const AddReq& r); //tokenizes request and then further queues it
+  //this will run decoding until all active requests are done
   std::vector<Generated> run();
 
 private:
